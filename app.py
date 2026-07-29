@@ -1,90 +1,106 @@
 import streamlit as st
 import pandas as pd
-from duckduckgo_search import DDGS
+from googlesearch import search
 from urllib.parse import urlparse
 import time
+import re
 
-# Helper function to clean a URL into a raw domain (e.g., https://nike.com -> nike.com)
-def get_clean_domain(url):
+# Helper function to extract ONLY the main global domain name
+def get_main_global_domain(url):
     try:
-        netloc = urlparse(url).netloc
-        domain = netloc.replace("www.", "")
-        return domain.lower()
+        netloc = urlparse(url).netloc.lower()
+        # Remove www. and any regional prefixes like www2. or m.
+        domain = re.sub(r'^(www\d*|m)\.', '', netloc)
+        
+        # Clean up common regional subdirectories if they exist (e.g., ://domain.com)
+        # We only want the root base network location
+        return domain
     except Exception:
         return ""
 
 # 1. App Setup
-st.title("Strict Domain Guesser 🚀")
-st.write("Upload an Excel file with a column named **'Company'** and optional **'Keyword'**.")
+st.title("Smart Google Content Matcher 🎯")
+st.write("Combines Company + Keyword row-by-row and scans Google search content for matches.")
 
 # 2. File Uploader
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx", "xls"])
 
 if uploaded_file:
-    # Read the Excel file
     df = pd.read_excel(uploaded_file)
     
-    # Check if 'Company' column exists
-    if 'Company' not in df.columns:
-        st.error("Error: Your file must have a column named 'Company'.")
+    # Validation check
+    if 'Company' not in df.columns or 'Keyword' not in df.columns:
+        st.error("Error: Excel must have both a 'Company' column and a 'Keyword' column.")
     else:
-        st.write(f"Found {len(df)} companies. Starting strict validation search...")
+        st.write(f"Found {len(df)} rows. Commencing advanced content-match search...")
         
         my_bar = st.progress(0)
         results_list = []
 
-        # 3. Loop through each row
+        # 3. Process row-by-row matching Company and adjacent Keyword cell
         for index, row in df.iterrows():
-            company = str(row['Company']).strip().lower()
-            keyword = str(row['Keyword']).strip().lower() if 'Keyword' in df.columns and pd.notna(row['Keyword']) else ""
+            company_raw = str(row['Company']).strip()
+            keyword_raw = str(row['Keyword']).strip() if pd.notna(row['Keyword']) else ""
             
-            # Formulate search query
-            query = f"{company} {keyword} official website"
+            # Lowercase versions for background string matching checks
+            company_lower = company_raw.lower()
+            keyword_lower = keyword_raw.lower()
+            
+            # Search query linking them tightly together
+            query = f"{company_raw} {keyword_raw} official website"
             final_domain = "Not Found"
             
             try:
-                # Fetch top 5 results to find a match
-                search_results = DDGS().text(query, max_results=5)
+                # Ask Google for advanced results including descriptive text snippets
+                # We check the top 5 links to inspect their context data
+                google_results = search(query, num_results=5, advanced=True, lang="en")
                 
-                if search_results:
-                    for result in search_results:
-                        link = result['href']
-                        raw_domain = get_clean_domain(link)
+                for result in google_results:
+                    link = result.url
+                    title = result.title.lower() if result.title else ""
+                    snippet = result.description.lower() if result.description else ""
+                    
+                    raw_domain = get_main_global_domain(link)
+                    
+                    # Ignore massive directory/social targets
+                    junk = ['wikipedia.org', 'facebook.com', 'linkedin.com', 'twitter.com', 'instagram.com', 'crunchbase.com', 'youtube.com']
+                    if any(jd in raw_domain for jd in junk):
+                        continue
+                    
+                    # CORE RULE: Scan information *around* the link (Title and Snippet Text)
+                    # Check if the text surrounding the link explicitly mentions our targets
+                    company_in_text = company_lower in title or company_lower in snippet or company_lower in raw_domain
+                    keyword_in_text = True
+                    
+                    if keyword_lower:
+                        keyword_in_text = keyword_lower in title or keyword_lower in snippet or keyword_lower in raw_domain
+                    
+                    # If the data text around the link matches both targets, grab it!
+                    if company_in_text and keyword_in_text:
+                        final_domain = raw_domain
+                        break
                         
-                        # FILTER 1: Skip massive social/info platforms
-                        junk_domains = ['wikipedia.org', 'facebook.com', 'linkedin.com', 'twitter.com', 'instagram.com', 'crunchbase.com', 'youtube.com']
-                        if any(jd in raw_domain for jd in junk_domains):
-                            continue
-                        
-                        # FILTER 2: Strict Match
-                        # The domain must contain either the company name or the keyword to be considered a match
-                        if (company in raw_domain) or (keyword and keyword in raw_domain):
-                            final_domain = raw_domain
-                            break  # Found a match, stop looking at other results for this company
-                            
-            except Exception:
-                final_domain = "Error"
+            except Exception as e:
+                final_domain = "Error: Blocked or Rate Limited"
             
-            # Save the clean domain result
             results_list.append(final_domain)
-            
-            # Update progress bar
             my_bar.progress((index + 1) / len(df))
-            time.sleep(1.2)  # Maintain safety delay
+            
+            # Safe padding delay for scraping 500 rows on Google search indexes
+            time.sleep(1.8)  
         
-        # 4. Add results to DataFrame and Show Download
-        df['Clean_Domain'] = results_list
+        # 4. Save results and present download options
+        df['Discovered_Domain'] = results_list
         st.success("Done! ✅")
         st.dataframe(df)
 
-        # Convert to Excel for download
-        output_file = "companies_with_domains.xlsx"
+        output_file = "matched_google_domains.xlsx"
         df.to_excel(output_file, index=False)
         
         with open(output_file, "rb") as file:
             st.download_button(
-                label="Download Clean Domains Excel",
+                label="Download Matched Domains Excel",
                 data=file,
-                file_name="companies_with_domains.xlsx",
+                file_name="matched_google_domains.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
